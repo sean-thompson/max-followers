@@ -50,6 +50,9 @@
       "services": {
         "$path": "Source/ServerScriptService/services"
       },
+      "LightweightNpcs": {
+        "$path": "Source/ServerScriptService/LightweightNpcs"
+      },
       "Config": {
         "$className": "Folder",
         "$ignoreUnknownInstances": true,
