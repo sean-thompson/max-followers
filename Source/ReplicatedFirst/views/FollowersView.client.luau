@@ -41,7 +41,7 @@ local MathUtils = require(game.ReplicatedFirst.LightweightNpcsClient.Utils.MathU
 
 local CHICKEN_GOD_TAG = "ChickenGod"
 local RIG_NAME = "Robert"
-local FOLLOWER_COUNT = 200
+local FOLLOWER_COUNT = 150
 
 -- Ring around the ChickenGod
 local MIN_RADIUS = 30
@@ -61,6 +61,9 @@ local TURN_FRACTION = 0.92 -- per-second smoothing fraction for facing
 
 -- Steering runs for 1/THINK_BUCKETS of the crowd each frame (~10hz at 60fps)
 local THINK_BUCKETS = 6
+
+-- Stop animating followers this far from the camera (engine-side saving)
+local ANIM_DISTANCE = 70
 
 -- Hysteresis so animation doesn't thrash between idle/walk at the threshold
 local START_MOVING_THRESHOLD = 0.15
@@ -82,6 +85,7 @@ type Follower = {
 	bucket: number, -- which frame group this follower thinks in
 	wantsToMove: boolean,
 	moving: boolean, -- animation state
+	animSuspended: boolean, -- too far from camera to bother animating
 	lastRenderedPosition: Vector3,
 	lastRenderedYaw: number,
 	idleTrack: AnimationTrack?,
@@ -159,6 +163,7 @@ local function spawnFollower(rig: Model, position: Vector3, bucket: number): Fol
 		bucket = bucket,
 		wantsToMove = false,
 		moving = false,
+		animSuspended = false,
 		lastRenderedPosition = position,
 		lastRenderedYaw = 0,
 		idleTrack = nil,
@@ -231,7 +236,7 @@ local function computeSteer(follower: Follower, flatGod: Vector3, playerPosition
 	return steer, toGod
 end
 
-local function updateThink(follower: Follower, flatGod: Vector3, playerPositions: { Vector3 })
+local function updateThink(follower: Follower, flatGod: Vector3, playerPositions: { Vector3 }, cameraPosition: Vector3)
 	local steer, toGod = computeSteer(follower, flatGod, playerPositions)
 
 	-- Hysteresis on the move/idle decision
@@ -256,8 +261,26 @@ local function updateThink(follower: Follower, flatGod: Vector3, playerPositions
 		follower.position = Vector3.new(follower.position.X, hit.Position.Y + follower.hipHeight, follower.position.Z)
 	end
 
+	-- Animation LOD: stop animating entirely when far from the camera
+	local farFromCamera = (follower.position - cameraPosition).Magnitude > ANIM_DISTANCE
+	if farFromCamera and not follower.animSuspended then
+		follower.animSuspended = true
+		if follower.idleTrack then
+			follower.idleTrack:Stop()
+		end
+		if follower.walkTrack then
+			follower.walkTrack:Stop()
+		end
+	elseif not farFromCamera and follower.animSuspended then
+		follower.animSuspended = false
+		local track = follower.moving and follower.walkTrack or follower.idleTrack
+		if track then
+			track:Play()
+		end
+	end
+
 	-- Walk animation speed tracks actual velocity
-	if follower.moving and follower.walkTrack then
+	if follower.moving and not follower.animSuspended and follower.walkTrack then
 		follower.walkTrack:AdjustSpeed(MathUtils:FlatVec(follower.velocity).Magnitude / WALK_ANIM_TUNED_SPEED)
 	end
 end
@@ -277,22 +300,27 @@ local function updateFrame(follower: Follower, dt: number)
 
 	follower.yaw = MathUtils:AngleLerp(follower.yaw, follower.targetYaw, 1 - math.pow(1 - TURN_FRACTION, dt))
 
-	-- Animation transitions (rare; the checks are cheap)
+	-- Animation transitions (rare; the checks are cheap). While suspended we
+	-- still track the moving state, but don't touch the animation tracks
 	if speed > 0.5 and not follower.moving then
 		follower.moving = true
-		if follower.idleTrack then
-			follower.idleTrack:Stop()
-		end
-		if follower.walkTrack then
-			follower.walkTrack:Play()
+		if not follower.animSuspended then
+			if follower.idleTrack then
+				follower.idleTrack:Stop()
+			end
+			if follower.walkTrack then
+				follower.walkTrack:Play()
+			end
 		end
 	elseif speed <= 0.5 and follower.moving then
 		follower.moving = false
-		if follower.walkTrack then
-			follower.walkTrack:Stop()
-		end
-		if follower.idleTrack then
-			follower.idleTrack:Play()
+		if not follower.animSuspended then
+			if follower.walkTrack then
+				follower.walkTrack:Stop()
+			end
+			if follower.idleTrack then
+				follower.idleTrack:Play()
+			end
 		end
 	end
 
@@ -360,6 +388,8 @@ local function start()
 		frameIndex += 1
 		local thinkBucket = frameIndex % THINK_BUCKETS
 		local flatGod = MathUtils:FlatVec((god :: Model):GetPivot().Position)
+		local camera = Workspace.CurrentCamera
+		local cameraPosition = camera and camera.CFrame.Position or Vector3.zero
 
 		local playerPositions: { Vector3 } = {}
 		for _, player in Players:GetPlayers() do
@@ -373,7 +403,7 @@ local function start()
 
 		for _, follower in followers do
 			if follower.bucket == thinkBucket then
-				updateThink(follower, flatGod, playerPositions)
+				updateThink(follower, flatGod, playerPositions, cameraPosition)
 			end
 			updateFrame(follower, dt)
 		end
