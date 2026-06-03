@@ -28,8 +28,8 @@
 		inventoryState:Observe(function(data) ... end)
 ]]
 
-local Bolt = require(script.Parent.Bolt)
-local NetworkBuilder = require(script.Parent.NetworkBuilder)
+local Bolt = require(script.Parent:WaitForChild("Bolt"))
+local NetworkBuilder = require(script.Parent:WaitForChild("NetworkBuilder"))
 
 -- ============================================================================
 -- GAME CONFIGURATION: Add new controllers and models here
