@@ -33,11 +33,11 @@ local MathUtils = require(game.ReplicatedFirst.LightweightNpcsClient.Utils.MathU
 
 local CHICKEN_GOD_TAG = "ChickenGod"
 local RIG_NAME = "Robert"
-local FOLLOWER_COUNT = 16
+local FOLLOWER_COUNT = 50
 
 -- Ring around the ChickenGod
-local MIN_RADIUS = 12
-local MAX_RADIUS = 18
+local MIN_RADIUS = 20
+local MAX_RADIUS = 30
 local RING_FALLOFF = 4 -- studs outside the band before urgency reaches full speed
 
 -- Separation
@@ -91,14 +91,9 @@ end
 local function spawnFollower(rig: Model, position: Vector3): Follower
 	local model = rig:Clone()
 
-	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = false
-			descendant.CanCollide = false
-			descendant.CanQuery = false
-			descendant.CanTouch = false
-		end
-	end
+	-- Same treatment as the LightweightNpcs client module: anchor the root,
+	-- leave the rest of the rig exactly as authored (these rigs are built
+	-- for batching — modifying their parts breaks them)
 	if model.PrimaryPart then
 		model.PrimaryPart.Anchored = true
 	end
@@ -249,9 +244,13 @@ local function start()
 	local rig = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Rigs"):WaitForChild(RIG_NAME) :: Model
 
 	local godPosition = (god :: Model):GetPivot().Position
-	for index = 1, FOLLOWER_COUNT do
-		local angle = (index / FOLLOWER_COUNT) * math.pi * 2
-		local radius = (MIN_RADIUS + MAX_RADIUS) / 2
+	-- Scatter spawns well inside and outside the ring band so the crowd
+	-- visibly converges on the ChickenGod at startup
+	local minSpawnRadius = MIN_RADIUS * 0.25
+	local maxSpawnRadius = MAX_RADIUS * 2.5
+	for _ = 1, FOLLOWER_COUNT do
+		local angle = math.random() * math.pi * 2
+		local radius = minSpawnRadius + math.random() * (maxSpawnRadius - minSpawnRadius)
 		local position = godPosition
 			+ Vector3.new(math.sin(angle) * radius, 0, math.cos(angle) * radius)
 		table.insert(followers, spawnFollower(rig, position))
