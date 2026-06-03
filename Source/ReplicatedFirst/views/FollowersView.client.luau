@@ -9,11 +9,19 @@
 	client runs its own boids sim, which makes reactions to the local
 	player instant (no replication round-trip).
 
-	Boids behaviour (per Heartbeat, 60hz):
+	Boids behaviour:
 	- Ring formation: stay between MIN_RADIUS and MAX_RADIUS of the ChickenGod
 	- Separation: push away from other followers that get too close
 	- Player avoidance: push away from characters, so players shove them around
 	- Reverence: when standing still, turn to face the ChickenGod
+
+	Performance structure (tag `naive-boids` has the simple 60hz O(n^2) version):
+	- Steering "thinks" are staggered: each follower steers/raycasts every
+	  THINK_BUCKETS-th frame (~10hz at 60fps); movement integration, turning
+	  and rendering stay per-frame so motion is smooth
+	- Follower separation queries a spatial hash grid (intrusive linked
+	  lists, rebuilt per frame with zero allocation) instead of all pairs
+	- PivotTo is skipped for followers that haven't moved or turned
 
 	Expected setup:
 	- Model tagged "ChickenGod" in Workspace (see ChickenGodView)
@@ -51,6 +59,9 @@ local WALK_SPEED = 8
 local WALK_ACCEL = 6
 local TURN_FRACTION = 0.92 -- per-second smoothing fraction for facing
 
+-- Steering runs for 1/THINK_BUCKETS of the crowd each frame (~10hz at 60fps)
+local THINK_BUCKETS = 6
+
 -- Hysteresis so animation doesn't thrash between idle/walk at the threshold
 local START_MOVING_THRESHOLD = 0.15
 local STOP_MOVING_THRESHOLD = 0.05
@@ -64,11 +75,18 @@ type Follower = {
 	model: Model,
 	position: Vector3, -- flat ground position (Y maintained separately)
 	velocity: Vector3,
+	wishDir: Vector3, -- steering decision, refreshed each think
 	yaw: number,
+	targetYaw: number,
 	hipHeight: number,
-	moving: boolean,
+	bucket: number, -- which frame group this follower thinks in
+	wantsToMove: boolean,
+	moving: boolean, -- animation state
+	lastRenderedPosition: Vector3,
+	lastRenderedYaw: number,
 	idleTrack: AnimationTrack?,
 	walkTrack: AnimationTrack?,
+	nextInCell: Follower?, -- intrusive linked list for the spatial grid
 }
 
 local followers: { Follower } = {}
@@ -82,13 +100,41 @@ groundCastParams.FilterType = Enum.RaycastFilterType.Exclude
 groundCastParams.FilterDescendantsInstances = { followersFolder }
 groundCastParams.RespectCanCollide = true
 
+-- ============================================================================
+-- Spatial hash grid: rebuilt every frame, queried during thinks
+-- ============================================================================
+
+local CELL_SIZE = FOLLOWER_SEPARATION
+local grid: { [number]: Follower } = {}
+
+local function cellKey(cellX: number, cellZ: number): number
+	-- Unique for any sane world size (|cell| < 65536)
+	return cellX * 131072 + cellZ
+end
+
+local function rebuildGrid()
+	table.clear(grid)
+	for _, follower in followers do
+		local key = cellKey(
+			math.floor(follower.position.X / CELL_SIZE),
+			math.floor(follower.position.Z / CELL_SIZE)
+		)
+		follower.nextInCell = grid[key]
+		grid[key] = follower
+	end
+end
+
+-- ============================================================================
+-- Setup
+-- ============================================================================
+
 local function loadTrack(animator: Animator, animationId: string): AnimationTrack
 	local animation = Instance.new("Animation")
 	animation.AnimationId = animationId
 	return animator:LoadAnimation(animation)
 end
 
-local function spawnFollower(rig: Model, position: Vector3): Follower
+local function spawnFollower(rig: Model, position: Vector3, bucket: number): Follower
 	local model = rig:Clone()
 
 	-- Same treatment as the LightweightNpcs client module: anchor the root,
@@ -106,11 +152,18 @@ local function spawnFollower(rig: Model, position: Vector3): Follower
 		model = model,
 		position = position,
 		velocity = Vector3.zero,
+		wishDir = Vector3.zero,
 		yaw = 0,
+		targetYaw = 0,
 		hipHeight = extents.Y / 2,
+		bucket = bucket,
+		wantsToMove = false,
 		moving = false,
+		lastRenderedPosition = position,
+		lastRenderedYaw = 0,
 		idleTrack = nil,
 		walkTrack = nil,
+		nextInCell = nil,
 	}
 
 	local animator = model:FindFirstChild("Animator", true)
@@ -127,7 +180,11 @@ local function spawnFollower(rig: Model, position: Vector3): Follower
 	return follower
 end
 
-local function computeSteer(follower: Follower, flatGod: Vector3): (Vector3, Vector3)
+-- ============================================================================
+-- Think: steering decisions + ground snap, runs at ~10hz per follower
+-- ============================================================================
+
+local function computeSteer(follower: Follower, flatGod: Vector3, playerPositions: { Vector3 }): (Vector3, Vector3)
 	local flatPosition = MathUtils:FlatVec(follower.position)
 	local steer = Vector3.zero
 
@@ -143,53 +200,54 @@ local function computeSteer(follower: Follower, flatGod: Vector3): (Vector3, Vec
 		end
 	end
 
-	-- Separation from other followers
-	for _, other in followers do
-		if other ~= follower then
-			local away = flatPosition - MathUtils:FlatVec(other.position)
-			local awayDistance = away.Magnitude
-			if awayDistance > 0.001 and awayDistance < FOLLOWER_SEPARATION then
-				steer += away.Unit * (1 - awayDistance / FOLLOWER_SEPARATION) * FOLLOWER_SEPARATION_WEIGHT
+	-- Separation from nearby followers (3x3 grid cells around us)
+	local baseCellX = math.floor(follower.position.X / CELL_SIZE)
+	local baseCellZ = math.floor(follower.position.Z / CELL_SIZE)
+	for cellX = baseCellX - 1, baseCellX + 1 do
+		for cellZ = baseCellZ - 1, baseCellZ + 1 do
+			local other = grid[cellKey(cellX, cellZ)]
+			while other do
+				if other ~= follower then
+					local away = flatPosition - MathUtils:FlatVec(other.position)
+					local awayDistance = away.Magnitude
+					if awayDistance > 0.001 and awayDistance < FOLLOWER_SEPARATION then
+						steer += away.Unit * (1 - awayDistance / FOLLOWER_SEPARATION) * FOLLOWER_SEPARATION_WEIGHT
+					end
+				end
+				other = other.nextInCell
 			end
 		end
 	end
 
 	-- Pushed around by players (local player reacts instantly — that's the point)
-	for _, player in Players:GetPlayers() do
-		local character = player.Character
-		local rootPart = character and character.PrimaryPart
-		if rootPart then
-			local away = flatPosition - MathUtils:FlatVec(rootPart.Position)
-			local awayDistance = away.Magnitude
-			if awayDistance > 0.001 and awayDistance < PLAYER_SEPARATION then
-				steer += away.Unit * (1 - awayDistance / PLAYER_SEPARATION) * PLAYER_SEPARATION_WEIGHT
-			end
+	for _, playerPosition in playerPositions do
+		local away = flatPosition - playerPosition
+		local awayDistance = away.Magnitude
+		if awayDistance > 0.001 and awayDistance < PLAYER_SEPARATION then
+			steer += away.Unit * (1 - awayDistance / PLAYER_SEPARATION) * PLAYER_SEPARATION_WEIGHT
 		end
 	end
 
 	return steer, toGod
 end
 
-local function yawTowards(direction: Vector3): number
-	return math.atan2(-direction.X, -direction.Z)
-end
-
-local function updateFollower(follower: Follower, flatGod: Vector3, dt: number)
-	local steer, toGod = computeSteer(follower, flatGod)
+local function updateThink(follower: Follower, flatGod: Vector3, playerPositions: { Vector3 })
+	local steer, toGod = computeSteer(follower, flatGod, playerPositions)
 
 	-- Hysteresis on the move/idle decision
 	local urgency = steer.Magnitude
-	local threshold = follower.moving and STOP_MOVING_THRESHOLD or START_MOVING_THRESHOLD
-	local wantsToMove = urgency > threshold
+	local threshold = follower.wantsToMove and STOP_MOVING_THRESHOLD or START_MOVING_THRESHOLD
+	follower.wantsToMove = urgency > threshold
 
-	if wantsToMove and urgency > 1 then
-		steer = steer.Unit
+	if follower.wantsToMove then
+		follower.wishDir = urgency > 1 and steer.Unit or steer
+	else
+		follower.wishDir = Vector3.zero
+		-- Face the ChickenGod in quiet reverence
+		if toGod.Magnitude > 0.001 then
+			follower.targetYaw = math.atan2(-toGod.X, -toGod.Z)
+		end
 	end
-
-	-- Accelerate toward the steer direction (magnitude scales speed)
-	local wishDir = wantsToMove and steer or Vector3.zero
-	follower.velocity = MathUtils:GroundAccelerate(wishDir, WALK_SPEED, WALK_ACCEL, follower.velocity, dt)
-	follower.position += follower.velocity * dt
 
 	-- Snap to ground
 	local rayOrigin = Vector3.new(follower.position.X, follower.position.Y + 10, follower.position.Z)
@@ -198,33 +256,37 @@ local function updateFollower(follower: Follower, flatGod: Vector3, dt: number)
 		follower.position = Vector3.new(follower.position.X, hit.Position.Y + follower.hipHeight, follower.position.Z)
 	end
 
-	-- Facing: direction of travel while moving, the ChickenGod while still
-	local speed = MathUtils:FlatVec(follower.velocity).Magnitude
-	local targetYaw = follower.yaw
-	if speed > 0.5 then
-		targetYaw = yawTowards(follower.velocity)
-	elseif toGod.Magnitude > 0.001 then
-		targetYaw = yawTowards(toGod)
+	-- Walk animation speed tracks actual velocity
+	if follower.moving and follower.walkTrack then
+		follower.walkTrack:AdjustSpeed(MathUtils:FlatVec(follower.velocity).Magnitude / WALK_ANIM_TUNED_SPEED)
 	end
-	follower.yaw = MathUtils:AngleLerp(follower.yaw, targetYaw, 1 - math.pow(1 - TURN_FRACTION, dt))
+end
 
-	follower.model:PivotTo(CFrame.new(follower.position) * CFrame.Angles(0, follower.yaw, 0))
+-- ============================================================================
+-- Frame: movement integration, turning, animation transitions, rendering
+-- ============================================================================
 
-	-- Animation state
+local function updateFrame(follower: Follower, dt: number)
+	follower.velocity = MathUtils:GroundAccelerate(follower.wishDir, WALK_SPEED, WALK_ACCEL, follower.velocity, dt)
+
+	local speed = MathUtils:FlatVec(follower.velocity).Magnitude
 	if speed > 0.5 then
-		if not follower.moving then
-			follower.moving = true
-			if follower.idleTrack then
-				follower.idleTrack:Stop()
-			end
-			if follower.walkTrack then
-				follower.walkTrack:Play()
-			end
+		follower.position += follower.velocity * dt
+		follower.targetYaw = math.atan2(-follower.velocity.X, -follower.velocity.Z)
+	end
+
+	follower.yaw = MathUtils:AngleLerp(follower.yaw, follower.targetYaw, 1 - math.pow(1 - TURN_FRACTION, dt))
+
+	-- Animation transitions (rare; the checks are cheap)
+	if speed > 0.5 and not follower.moving then
+		follower.moving = true
+		if follower.idleTrack then
+			follower.idleTrack:Stop()
 		end
 		if follower.walkTrack then
-			follower.walkTrack:AdjustSpeed(speed / WALK_ANIM_TUNED_SPEED)
+			follower.walkTrack:Play()
 		end
-	elseif follower.moving then
+	elseif speed <= 0.5 and follower.moving then
 		follower.moving = false
 		if follower.walkTrack then
 			follower.walkTrack:Stop()
@@ -233,7 +295,20 @@ local function updateFollower(follower: Follower, flatGod: Vector3, dt: number)
 			follower.idleTrack:Play()
 		end
 	end
+
+	-- Only render followers that actually moved or turned
+	local positionDelta = follower.position - follower.lastRenderedPosition
+	local yawDelta = follower.yaw - follower.lastRenderedYaw
+	if positionDelta.Magnitude > 0.01 or math.abs(yawDelta) > 0.002 then
+		follower.model:PivotTo(CFrame.new(follower.position) * CFrame.Angles(0, follower.yaw, 0))
+		follower.lastRenderedPosition = follower.position
+		follower.lastRenderedYaw = follower.yaw
+	end
 end
+
+-- ============================================================================
+-- Startup
+-- ============================================================================
 
 local function start()
 	local god = CollectionService:GetTagged(CHICKEN_GOD_TAG)[1]
@@ -260,16 +335,17 @@ local function start()
 	end
 
 	local godPosition = (god :: Model):GetPivot().Position
+
 	-- Scatter spawns well inside and outside the ring band so the crowd
 	-- visibly converges on the ChickenGod at startup
 	local minSpawnRadius = MIN_RADIUS * 0.25
 	local maxSpawnRadius = MAX_RADIUS * 2.5
-	for _ = 1, FOLLOWER_COUNT do
+	for index = 1, FOLLOWER_COUNT do
 		local angle = math.random() * math.pi * 2
 		local radius = minSpawnRadius + math.random() * (maxSpawnRadius - minSpawnRadius)
 		local position = godPosition
 			+ Vector3.new(math.sin(angle) * radius, 0, math.cos(angle) * radius)
-		table.insert(followers, spawnFollower(rig, position))
+		table.insert(followers, spawnFollower(rig, position, index % THINK_BUCKETS))
 	end
 
 	-- DEBUG: framerate + boids cost, printed every 2s
@@ -277,11 +353,29 @@ local function start()
 	local statTime = 0
 	local statBoidsTime = 0
 
+	local frameIndex = 0
 	RunService.Heartbeat:Connect(function(dt: number)
 		local boidsStart = os.clock()
+
+		frameIndex += 1
+		local thinkBucket = frameIndex % THINK_BUCKETS
 		local flatGod = MathUtils:FlatVec((god :: Model):GetPivot().Position)
+
+		local playerPositions: { Vector3 } = {}
+		for _, player in Players:GetPlayers() do
+			local rootPart = player.Character and player.Character.PrimaryPart
+			if rootPart then
+				table.insert(playerPositions, MathUtils:FlatVec(rootPart.Position))
+			end
+		end
+
+		rebuildGrid()
+
 		for _, follower in followers do
-			updateFollower(follower, flatGod, dt)
+			if follower.bucket == thinkBucket then
+				updateThink(follower, flatGod, playerPositions)
+			end
+			updateFrame(follower, dt)
 		end
 
 		statBoidsTime += os.clock() - boidsStart
