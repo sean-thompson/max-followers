@@ -33,11 +33,11 @@ local MathUtils = require(game.ReplicatedFirst.LightweightNpcsClient.Utils.MathU
 
 local CHICKEN_GOD_TAG = "ChickenGod"
 local RIG_NAME = "Robert"
-local FOLLOWER_COUNT = 50
+local FOLLOWER_COUNT = 500
 
 -- Ring around the ChickenGod
-local MIN_RADIUS = 20
-local MAX_RADIUS = 30
+local MIN_RADIUS = 30
+local MAX_RADIUS = 45
 local RING_FALLOFF = 4 -- studs outside the band before urgency reaches full speed
 
 -- Separation
@@ -242,6 +242,22 @@ local function start()
 	end
 
 	local rig = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Rigs"):WaitForChild(RIG_NAME) :: Model
+
+	-- The rig model can arrive before its descendants finish replicating, and
+	-- there's no "fully replicated" signal — wait until it has a PrimaryPart,
+	-- an Animator, and the descendant count has been stable for a few frames
+	local stableFrames = 0
+	local lastCount = -1
+	while stableFrames < 10 do
+		task.wait()
+		local count = #rig:GetDescendants()
+		if count == lastCount and count > 0 and rig.PrimaryPart and rig:FindFirstChild("Animator", true) then
+			stableFrames += 1
+		else
+			stableFrames = 0
+			lastCount = count
+		end
+	end
 
 	local godPosition = (god :: Model):GetPivot().Position
 	-- Scatter spawns well inside and outside the ring band so the crowd
