@@ -41,7 +41,7 @@ local MathUtils = require(game.ReplicatedFirst.LightweightNpcsClient.Utils.MathU
 
 local CHICKEN_GOD_TAG = "ChickenGod"
 local RIG_NAME = "Robert"
-local FOLLOWER_COUNT = 500
+local FOLLOWER_COUNT = 200
 
 -- Ring around the ChickenGod
 local MIN_RADIUS = 30
