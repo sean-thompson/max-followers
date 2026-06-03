@@ -272,10 +272,31 @@ local function start()
 		table.insert(followers, spawnFollower(rig, position))
 	end
 
+	-- DEBUG: framerate + boids cost, printed every 2s
+	local statFrames = 0
+	local statTime = 0
+	local statBoidsTime = 0
+
 	RunService.Heartbeat:Connect(function(dt: number)
+		local boidsStart = os.clock()
 		local flatGod = MathUtils:FlatVec((god :: Model):GetPivot().Position)
 		for _, follower in followers do
 			updateFollower(follower, flatGod, dt)
+		end
+
+		statBoidsTime += os.clock() - boidsStart
+		statTime += dt
+		statFrames += 1
+		if statTime >= 2 then
+			print(string.format(
+				"FollowersView STATS: %.0f fps | boids %.1fms/frame (%.0f%% of frame budget)",
+				statFrames / statTime,
+				(statBoidsTime / statFrames) * 1000,
+				(statBoidsTime / statTime) * 100
+			))
+			statFrames = 0
+			statTime = 0
+			statBoidsTime = 0
 		end
 	end)
 
