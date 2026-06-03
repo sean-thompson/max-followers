@@ -1,0 +1,20 @@
+# Roblox place files - these should stay in Studio only
+*.rbxl
+*.rbxlx
+
+# MCP local configuration
+.claude/settings.local.json
+
+# VS Code / Tooling artifacts
+sourcemap.json
+
+# Wally package installs
+Packages/
+
+# Refs folder
+refs/
+
+# BigQuery analytics local config and Python venv
+bigquery/.analytics-config.json
+bigquery/.venv/
+bigquery/output/

@@ -1,0 +1,10 @@
+[package]
+name = "dubit/roblox-template"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[dependencies]
+DebugTools = "dubit/debug-tools@~1.1.0"
+React = "jsdotlua/react@17.2.0"
+ReactRoblox = "jsdotlua/react-roblox@17.2.0"

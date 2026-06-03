@@ -1,0 +1,62 @@
+{
+  "name": "RobloxTemplate",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedFirst": {
+      "$path": "Source/ReplicatedFirst",
+      "$ignoreUnknownInstances": true
+    },
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "$ignoreUnknownInstances": true,
+      "Bolt": {
+        "$path": "Source/ReplicatedStorage/Bolt.luau"
+      },
+      "Network": {
+        "$path": "Source/ReplicatedStorage/Network.luau"
+      },
+      "NetworkBuilder": {
+        "$path": "Source/ReplicatedStorage/NetworkBuilder.luau"
+      },
+      "Utils": {
+        "$path": "Source/ReplicatedStorage/Utils"
+      },
+      "ViewState": {
+        "$path": "Source/ReplicatedStorage/ViewState.luau"
+      },
+      "Config": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true,
+        "ConfigTypes": {
+          "$path": "Source/ReplicatedStorage/Config/ConfigTypes"
+        }
+      },
+      "Packages": {
+        "$path": "Packages"
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$ignoreUnknownInstances": true,
+      "controllers": {
+        "$path": "Source/ServerScriptService/controllers"
+      },
+      "debug": {
+        "$path": "Source/ServerScriptService/debug"
+      },
+      "models": {
+        "$path": "Source/ServerScriptService/models"
+      },
+      "services": {
+        "$path": "Source/ServerScriptService/services"
+      },
+      "Config": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true,
+        "ConfigTypes": {
+          "$path": "Source/ServerScriptService/Config/ConfigTypes"
+        }
+      }
+    }
+  }
+}
